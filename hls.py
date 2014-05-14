@@ -70,13 +70,13 @@ class MediaStream(object):
         playlist = _playlist or _get_playlist(url)
         assert m3u.is_m3u(playlist)
         assert not m3u.is_master(playlist)
-        info = m3u.get_media_info(playlist)
-        self.sequence = info.sequence
-        self.is_encrypted = info.is_encrypted
-        self.iv = info.iv
+        self.info = m3u.get_media_info(playlist)
+        self.sequence = self.info.sequence
+        self.is_encrypted = self.info.is_encrypted
+        self.iv = self.info.iv
         self.key = None
         if self.is_encrypted:
-            r = requests.get(info.key_url)
+            r = requests.get(self.info.key_url)
             r.raise_for_status()
             self.key = r.content
         self.segment_urls = m3u.get_segments(url, playlist)
