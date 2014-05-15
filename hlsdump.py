@@ -1,166 +1,253 @@
 """
 HLS download
 
-This does not work for encrypted files (yet)
+* This does not work for encrypted files (yet)
+
+Basically works as follows
+
+1. The main thread (hls_playlist_loop()) periodically polls the playlist, and
+   queues segment urls
+2. A background thread worker (HLSSegmentDownloader) reads the queue, downloads
+   the segments and saves then into individual files
+3: Another background thread handles some HTTP retries
 
 A cool trick to get a working video from these dumps
 
     ls video*.ts | sort -t '-' -k 2n  | xargs cat > joinedfile
     mplayer -demuxer lavf -correct-pts joinedfile
 
+You might want to play with MPlayer parameters a bit more though
+
 """
 from __future__ import print_function
+from __future__ import unicode_literals
 import hls
 import sys
 import requests
+from requests.exceptions import ConnectionError
 import time
 import os
-# TODO: override user agent
+import hashlib
+import threading
+import Queue
+import socket
 
-class HLSDownloader:
+def retry_save_segment_loop(queue, http_session):
     """
-    An HLS helper to dump a stream into a file
+    Background worker to retry failed segment downloads, this
+    is similar to HLSSegmentDownloader.save_segment() but
+    without retries and timeouts
     """
-
-    DEBUG = False
-
-    def __init__(self, url, folder):
-        self.folder = folder
+    while True:
         try:
-            os.mkdir(folder)
+            url, path = queue.get()
+            req = http_session.get( url, stream=True)
+
+            if os.path.exists(path):
+                print('[Retry] File %s already exists, skipping' % (path))
+                continue
+            with file( path, 'wb') as out:
+                for chunk in req.iter_content():
+                    out.write(chunk)
+        except:
+            continue
+        print('[Retry] Successfully retrieved deferred segment as %s' % path)
+
+class HLSSegmentDownloader(threading.Thread):
+    """
+    Dowloads HLS video segments
+
+    The stats as shown by print_info() refer to
+
+    failed: amount of segments we failed to get due to errors
+            e.g. HTTP 404, timeouts, etc
+    total:  amount of segments we tried to retrieve
+    missed: amount of segments that we did not get because there
+            were gaps in the playlist
+    """
+
+    def __init__(self, queue, folder='video', http_session=requests.Session()):
+        threading.Thread.__init__(self)
+        self.setDaemon(True)
+        self.queue = queue
+        self.folder = folder
+        self.http_session = http_session
+        self.name_prefix = 'video-'
+
+        # Create folder if it does not exist
+        if not os.path.exists(self.folder):
+            os.mkdir(self.folder)
+        
+        if not os.path.isdir(self.folder):
+            raise RuntimeError('%s is not a folder' % self.folder)
+
+        self.lastseq = -1
+        self.stats = {
+                'failed': 0,
+                'missed': 0,
+                'total': 0
+                }
+        
+        # Start background retry worker
+        self.retry_queue = Queue.Queue()
+        retry_thread = threading.Thread(target=retry_save_segment_loop, 
+                                        args=(self.retry_queue, self.http_session))
+        retry_thread.setDaemon(True)
+        retry_thread.start()
+
+    def run(self):
+        while True:
+            seq, url, playlistinfo = self.queue.get()
+            self.stats['total'] += 1
+            if self.lastseq != -1 and seq != self.lastseq+1:
+                self.stats['missed'] += seq - self.lastseq
+
+            self.save_segment(url, seq, playlistinfo)
+            self.queue.task_done()
+            self.print_info(playlistinfo)
+
+    @staticmethod
+    def remove(path):
+        """
+        The sames as os.remove() except it ignores raised
+        exceptions
+        """
+        try:
+            os.remove(path)
         except OSError:
             pass
-#        for filename in os.listdir(folder):
-#            if filename.startswith('video-'):
-#                raise RuntimeError('path %s already has some files in it' % folder )
 
-        self.playlist = url
-        # The next sequence num we want
-        self.nextseq = -1
-
-        # Stats from last playlist fetch
-        self.segmentcount = 0
-        self.targetduration = 0
-        self.last_waittime = 0
-        self.skipped = 0
-        self.waitfactor = 0.5
-
-        # Global stats
-        self.notfound = 0
-        self.lostcount = 0
-
-    def fetch_playlist(self):
+    def save_segment(self, url, seq, playlistinfo, chunk_size=1024*32):
         """
-        Download a playlist and fetch all segments that were not
-        previously downloaded
-        """
-        if self.DEBUG:
-            print('')
+        Dowload segment URL and save it into a file. The file will
+        be named as
 
-        skip_wait = False
-        strm = hls.get_stream(self.playlist)
-        if self.nextseq == -1 or strm.sequence >= self.nextseq:
+            <prefix><segment sequence number>.ts
+
+        * url of the segment
+        * seq number of the segment 
+        * playlistinfo is a MediaInfo object for the playlist
+        * chunk_size is the amount of content we hold in memory at a time
+
+        You can set the **name_prefix** attribute to change the prefix
+        """
+
+        path = os.path.join(self.folder, 
+                            '%s-%d.ts' % (self.name_prefix, seq) )
+        try:
+            # FIXME: this timeout might be too large/small
+            req = self.http_session.get( url, stream=True, 
+                                        timeout=playlistinfo.target_duration)
+            req.raise_for_status()
+
+            if os.path.exists(path):
+                print('File %s already exists, skipping' % (path))
+                return
+
+            with file( path, 'wb') as out:
+                for chunk in req.iter_content(chunk_size):
+                    out.write(chunk)
+        except requests.HTTPError as ex:
+            if ex.response.status_code == 404:
+                print('HTTP Error(404) fetching segment %s' % url)
+                self.stats['failed'] += 1
+                self.remove(path)
+            else:
+                print('HTTP error fetching segment %s' % url)
+                self.stats['failed'] += 1
+            return
+        except (ConnectionError, socket.timeout) as ex:
+            self.retry_queue.put( (url, path))
+            self.remove(path)
+            self.stats['failed'] += 1
+            print('Defering (timeout:%d) segment (%d) %s' % 
+                        (playlistinfo.target_duration, seq, url))
+            return
+
+    def print_info(self, info):
+        """
+        Print worker status
+        """
+        for name, value in self.stats.items():
+            print("%s: %s " % (name.capitalize(), value), end='')
+        print("TargetDuration: %s" % info.target_duration, end='')
+        print('')
+
+def hls_playlist_loop(queue, playlist, http_session=requests.Session()):
+    """
+    Periodically refreshes a playlist and pushes the segment
+    information into a queue
+
+    * queue is the queue where we place segment information
+      as (sequencenum, url, MediaInfo)
+    * playlist URL
+    * http_session is a requests.Session() object
+
+    This function BLOCKS execution
+    """
+    queue = queue
+    nextseq = -1
+
+    failed = 0
+    while True:
+        try:
+            strm = hls.get_stream(playlist, 
+                                    http_session=http_session)
+        except ConnectionError:
+            failed = True
+            if failed < 3:
+                continue
+            else:
+                print("Failed to get the playlist (%d), leaving..." % failed)
+                return
+
+        if nextseq == -1 or strm.sequence >= nextseq:
             start = 0
         else:
-            start = self.nextseq - strm.sequence
-        self.skipped = float(start) / len(strm.segment_urls)
-        self.segmentcount = len(strm.segment_urls)
-        self.targetduration = strm.info.target_duration
-
-        if self.nextseq != -1 and strm.sequence > self.nextseq:
-            self.lostcount += strm.sequence - self.nextseq
+            start = nextseq - strm.sequence
 
         for i in range(start, len(strm.segment_urls)):
-            self.print_progress(strm, i)
-            try:
-                self.save_segment(strm.segment_urls[i], strm.sequence + i)
-            except requests.HTTPError, ex:
-                if ex.response.status_code == 404:
-                    self.notfound += 1
-                    skip_wait = True
-                    continue
-                else:
-                    raise ex
+            queue.put( (
+                    strm.sequence+i,
+                    strm.segment_urls[i],
+                    strm.info
+                ))
+        nextseq = strm.sequence+len(strm.segment_urls)
 
-        self.nextseq = strm.sequence+len(strm.segment_urls)
-        if skip_wait:
-            return 0
-        else:
-            return self.waittime(strm, len(strm.segment_urls)-start)
+        # TODO: if we start seeing the same playlist a lot ... (do something?)
+        # according to the RFC we should scale the waittime
+        if start == len(strm.segment_urls):
+            print('Playlist is the same')
 
-    def waittime(self, strm, segmentcount):
-        """
-        Returns time you should wait before calling fetch_playlist again
+        # Sleep before refreshing the list
+        time.sleep(strm.info.target_duration)
 
-        * strm is a MediaStream object
-        * segmentcount is the number of segments you played
-        """
-        # There is nothing scientific about this function
-        # If you need GOOD timing considerations for HLS
-        # check the RFC
-        if self.skipped >= 0.8:
-            self.waitfactor = 1
-        elif self.skipped <= 0.01:
-            self.waitfactor = 0.5
-
-        wtime = strm.info.target_duration * self.waitfactor
-
-	return strm.info.target_duration * 0.5
-        # Make sure waittime is between 
-        # target_duration and ~targetduration*#segments
-#        return min(max(wtime, strm.info.target_duration), 0.9*strm.info.target_duration*len(strm.segment_urls))
-
-    def print_progress(self, strm, segment):
-        """
-        Show information about current stream/chunk and
-        overall statistics
-        """
-        if not self.DEBUG:
-            sys.stdout.write("\r")
-        sys.stdout.write("\r#%d Skipped:%d%% Wait:%.1f Wf:%.1f" % (strm.sequence + segment, self.skipped*100, self.last_waittime, self.waitfactor))
-        sys.stdout.write(" Seg#:%d Dur:%d Lost:%d NotFound:%d" % (self.segmentcount, self.targetduration, self.lostcount, self.notfound))
-        if self.DEBUG:
-            print('')
-        sys.stdout.flush()
-
-    def save_segment(self, url, num, chunk_size=1024*32):
-        """
-        Dowload URL and write it into the out file object
-
-        * chunk_size is the amount of content we hold in memory
-        """
-        req = requests.get( url, stream=True)
-        req.raise_for_status()
-        with file(os.path.join(self.folder, 'video-%d.ts' % num ), 'wb') as out:
-            for chunk in req.iter_content(chunk_size):
-                out.write(chunk)
-
-    def download(self):
-        """
-        Block while downloading HLS stream
-        """
-        while True:
-            try:
-                waittime = self.fetch_playlist()
-                self.last_waittime = waittime
-                time.sleep(waittime)
-            except requests.exceptions.ConnectionError, ex:
-                print(ex)
-                time.sleep(2)
 
 def main():
+    """hlsdump <url> <path>"""
     if len(sys.argv) != 3:
-        print('Usage: hlsdump <path> <url>')
+        print('Usage: hlsdump <url> <path>')
         sys.exit(-1)
+    url = sys.argv[1]
+    path = sys.argv[2]
+
+    queue = Queue.Queue()
+
+    # HTTP session settings
+    session = requests.Session()
+    session.headers.update({'User-Agent': 'Apple-iPhone5C2/1001.405'})
+
+    worker = HLSSegmentDownloader(queue, folder=path, http_session=session)
+    worker.name_prefix = 'video-' + hashlib.md5(url).hexdigest()
+    worker.start()
 
     try:
-        dump = HLSDownloader(sys.argv[2], sys.argv[1])
-        dump.DEBUG = True
-        dump.download()
+        print("Fetching HLS from %s" % url)
+        hls_playlist_loop(queue, url, http_session=session)
+        queue.join()
     except KeyboardInterrupt:
-        print("\nInterrupted")
-    except RuntimeError, ex:
-        print(ex)
+        print("Interrupted")
+        sys.exit(-1)
 
 if __name__ == '__main__':
     main()
