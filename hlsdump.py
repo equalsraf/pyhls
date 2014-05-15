@@ -2,12 +2,19 @@
 HLS download
 
 This does not work for encrypted files (yet)
+
+A cool trick to get a working video from these dumps
+
+    ls video*.ts | sort -t '-' -k 2n  | xargs cat > joinedfile
+    mplayer -demuxer lavf -correct-pts joinedfile
+
 """
 from __future__ import print_function
 import hls
 import sys
 import requests
 import time
+import os
 # TODO: override user agent
 
 class HLSDownloader:
@@ -17,8 +24,16 @@ class HLSDownloader:
 
     DEBUG = False
 
-    def __init__(self, url, filename):
-        self.out = file(filename, 'wb')
+    def __init__(self, url, folder):
+        self.folder = folder
+        try:
+            os.mkdir(folder)
+        except OSError:
+            pass
+#        for filename in os.listdir(folder):
+#            if filename.startswith('video-'):
+#                raise RuntimeError('path %s already has some files in it' % folder )
+
         self.playlist = url
         # The next sequence num we want
         self.nextseq = -1
@@ -34,9 +49,6 @@ class HLSDownloader:
         self.notfound = 0
         self.lostcount = 0
 
-    def __del__(self):
-        self.out.close()
-
     def fetch_playlist(self):
         """
         Download a playlist and fetch all segments that were not
@@ -45,6 +57,7 @@ class HLSDownloader:
         if self.DEBUG:
             print('')
 
+        skip_wait = False
         strm = hls.get_stream(self.playlist)
         if self.nextseq == -1 or strm.sequence >= self.nextseq:
             start = 0
@@ -60,16 +73,20 @@ class HLSDownloader:
         for i in range(start, len(strm.segment_urls)):
             self.print_progress(strm, i)
             try:
-                self.save_segment(strm.segment_urls[i])
+                self.save_segment(strm.segment_urls[i], strm.sequence + i)
             except requests.HTTPError, ex:
                 if ex.response.status_code == 404:
                     self.notfound += 1
+                    skip_wait = True
                     continue
                 else:
                     raise ex
 
         self.nextseq = strm.sequence+len(strm.segment_urls)
-        return self.waittime(strm, len(strm.segment_urls)-start)
+        if skip_wait:
+            return 0
+        else:
+            return self.waittime(strm, len(strm.segment_urls)-start)
 
     def waittime(self, strm, segmentcount):
         """
@@ -82,15 +99,16 @@ class HLSDownloader:
         # If you need GOOD timing considerations for HLS
         # check the RFC
         if self.skipped >= 0.8:
-            self.waitfactor = 1.5
+            self.waitfactor = 1
         elif self.skipped <= 0.01:
             self.waitfactor = 0.5
 
-        wtime = strm.info.target_duration * segmentcount * self.waitfactor
+        wtime = strm.info.target_duration * self.waitfactor
 
+	return strm.info.target_duration * 0.5
         # Make sure waittime is between 
         # target_duration and ~targetduration*#segments
-        return min(max(wtime, strm.info.target_duration), 0.9*strm.info.target_duration*len(strm.segment_urls))
+#        return min(max(wtime, strm.info.target_duration), 0.9*strm.info.target_duration*len(strm.segment_urls))
 
     def print_progress(self, strm, segment):
         """
@@ -105,7 +123,7 @@ class HLSDownloader:
             print('')
         sys.stdout.flush()
 
-    def save_segment(self, url, chunk_size=1024*32):
+    def save_segment(self, url, num, chunk_size=1024*32):
         """
         Dowload URL and write it into the out file object
 
@@ -113,31 +131,36 @@ class HLSDownloader:
         """
         req = requests.get( url, stream=True)
         req.raise_for_status()
-        for chunk in req.iter_content(chunk_size):
-            self.out.write(chunk)
+        with file(os.path.join(self.folder, 'video-%d.ts' % num ), 'wb') as out:
+            for chunk in req.iter_content(chunk_size):
+                out.write(chunk)
 
     def download(self):
         """
         Block while downloading HLS stream
         """
         while True:
-            waittime = self.fetch_playlist()
-            self.last_waittime = waittime
-            time.sleep(waittime)
+            try:
+                waittime = self.fetch_playlist()
+                self.last_waittime = waittime
+                time.sleep(waittime)
+            except requests.exceptions.ConnectionError, ex:
+                print(ex)
+                time.sleep(2)
 
 def main():
     if len(sys.argv) != 3:
-        print('Usage: hlsdump <filename> <url>')
+        print('Usage: hlsdump <path> <url>')
         sys.exit(-1)
 
-    #url = "http://devimages.apple.com/iphone/samples/bipbop/bipbopall.m3u8"
-    #url = 'http://www.nasa.gov/multimedia/nasatv/NTV-Public-IPS.m3u8'
     try:
         dump = HLSDownloader(sys.argv[2], sys.argv[1])
-        #dump.DEBUG = True
+        dump.DEBUG = True
         dump.download()
     except KeyboardInterrupt:
         print("\nInterrupted")
+    except RuntimeError, ex:
+        print(ex)
 
 if __name__ == '__main__':
     main()
