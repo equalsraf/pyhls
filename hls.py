@@ -36,8 +36,12 @@ def dump(url, filename, progress_cb=None, abort_cb=None, max_bandwidth=float('in
         os.remove(filename)
 
 
-def get_stream(url, max_bandwidth=float('inf')):
-    session = requests.Session()
+def get_stream(url, max_bandwidth=float('inf'), http_session=None):
+    if http_session:
+        session = http_session
+    else:
+        session = requests.Session()
+
     r = session.get(url)
     r.raise_for_status()
     playlist = r.text
