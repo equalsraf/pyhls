@@ -193,12 +193,12 @@ def hls_playlist_loop(queue, playlist, http_session=requests.Session()):
         try:
             strm = hls.get_stream(playlist, 
                                     http_session=http_session)
-        except ConnectionError:
+        except Exception as ex:
             failed = True
             if failed < 3:
                 continue
             else:
-                print("Failed to get the playlist (%d), leaving..." % failed)
+                print("Failed to get the playlist (%d) %s" % (failed, ex))
                 return
 
         if nextseq == -1 or strm.sequence >= nextseq:
