@@ -13,8 +13,8 @@ Basically works as follows
 
 A cool trick to get a working video from these dumps
 
-    ls video*.ts | sort -t '-' -k 2n  | xargs cat > joinedfile
-    mplayer -demuxer lavf -correct-pts joinedfile
+    ls video*.ts | sort -t '-' -k 3n  | xargs cat > joinedfile
+    ffmpeg -i <joinedfile> -c copy -bsf:a aac_adtstoasc final.ts
 
 You might want to play with MPlayer parameters a bit more though
 
