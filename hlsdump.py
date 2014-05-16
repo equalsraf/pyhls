@@ -104,7 +104,7 @@ class HLSSegmentDownloader(threading.Thread):
 
             self.save_segment(url, seq, playlistinfo)
             self.queue.task_done()
-            self.print_info(playlistinfo)
+            self.print_info(seq, playlistinfo)
 
     @staticmethod
     def remove(path):
