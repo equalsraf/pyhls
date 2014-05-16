@@ -149,25 +149,30 @@ class HLSSegmentDownloader(threading.Thread):
                     out.write(chunk)
         except requests.HTTPError as ex:
             if ex.response.status_code == 404:
-                print('HTTP Error(404) fetching segment %s' % url)
-                self.stats['failed'] += 1
-                self.remove(path)
+                self.defer_segment(seq, url, path)
             else:
                 print('HTTP error fetching segment %s' % url)
                 self.stats['failed'] += 1
             return
-        except (ConnectionError, socket.timeout) as ex:
-            self.retry_queue.put( (url, path))
-            self.remove(path)
-            self.stats['failed'] += 1
-            print('Defering (timeout:%d) segment (%d) %s' % 
-                        (playlistinfo.target_duration, seq, url))
+        except (ConnectionError, socket.timeout, requests.exceptions.Timeout) as ex:
+            self.defer_segment(seq, url, path)
             return
 
-    def print_info(self, info):
+    def defer_segment(self, seq, url, path):
+        """
+        Defer a segment download
+        """
+        self.retry_queue.put( (url, path))
+        self.remove(path)
+        self.stats['failed'] += 1
+        print('Defering segment (%d) %s' % 
+    		(seq, url))
+
+    def print_info(self, seq, info):
         """
         Print worker status
         """
+        print('#%d ' % seq, end='')
         for name, value in self.stats.items():
             print("%s: %s " % (name.capitalize(), value), end='')
         print("TargetDuration: %s" % info.target_duration, end='')
