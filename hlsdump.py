@@ -219,7 +219,7 @@ def hls_playlist_loop(queue, playlist, http_session=requests.Session()):
             print('Playlist is the same')
 
         # Sleep before refreshing the list
-        time.sleep(strm.info.target_duration)
+        time.sleep(strm.info.target_duration*0.5)
 
 
 def main():
