@@ -244,7 +244,7 @@ def main():
     # A cool trick to get a working video from these dumps
     #
     #     ls video*.ts | sort -t '-' -k 3n  | xargs cat > joinedfile
-    #     ffmpeg -i <joinedfile> -c copy -bsf:a aac_adtstoasc final.ts
+    #     ffmpeg -i joinedfile -c copy -bsf:a aac_adtstoasc final.mp4
     #
 
     try:
