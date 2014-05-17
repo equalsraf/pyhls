@@ -11,13 +11,6 @@ Basically works as follows
    the segments and saves then into individual files
 3: Another background thread handles some HTTP retries
 
-A cool trick to get a working video from these dumps
-
-    ls video*.ts | sort -t '-' -k 3n  | xargs cat > joinedfile
-    ffmpeg -i <joinedfile> -c copy -bsf:a aac_adtstoasc final.ts
-
-You might want to play with MPlayer parameters a bit more though
-
 """
 from __future__ import print_function
 from __future__ import unicode_literals
@@ -245,6 +238,12 @@ def main():
     worker = HLSSegmentDownloader(queue, folder=path, http_session=session)
     worker.name_prefix = 'video-' + hashlib.md5(url).hexdigest()
     worker.start()
+
+    # A cool trick to get a working video from these dumps
+    #
+    #     ls video*.ts | sort -t '-' -k 3n  | xargs cat > joinedfile
+    #     ffmpeg -i <joinedfile> -c copy -bsf:a aac_adtstoasc final.ts
+    #
 
     try:
         print("Fetching HLS from %s" % url)
