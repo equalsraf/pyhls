@@ -96,6 +96,7 @@ class HLSSegmentDownloader(threading.Thread):
                 self.stats['missed'] += seq - self.lastseq
 
             self.save_segment(url, seq, playlistinfo)
+            self.lastseq = seq
             self.queue.task_done()
             self.print_info(seq, playlistinfo)
 
