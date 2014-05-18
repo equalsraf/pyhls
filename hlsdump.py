@@ -189,7 +189,7 @@ class HLSSegmentDownloader(threading.Thread):
         print('Defering segment (%d) %s' % 
     		(seq, url))
 
-    def print_info(self, overflow, seq, info):
+    def print_info(self, seq, overflow, info):
         """
         Print worker status
         """
