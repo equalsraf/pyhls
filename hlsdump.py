@@ -228,7 +228,7 @@ def hls_playlist_loop(queue, playlist, http_session=requests.Session()):
             failed += 1
             print("Failed to get the playlist: %s" % ex)
             if failed < 4:
-                time.sleep(3**failed)
+                #time.sleep(3**failed)
                 continue
             else:
                 return
