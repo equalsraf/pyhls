@@ -1,12 +1,12 @@
 """
-HLS download
+HLS stream download helper
 
 * This does not work for encrypted files (yet)
 
 Basically works as follows
 
 1. The main thread (hls_playlist_loop()) periodically polls the playlist, and
-   queues segment urls
+   queues segment urls for download
 2. A background thread worker (HLSSegmentDownloader) reads the queue, downloads
    the segments and saves then into individual files
 3: Another background thread handles some HTTP retries
@@ -17,7 +17,7 @@ from __future__ import unicode_literals
 import hls
 import sys
 import requests
-from requests.exceptions import ConnectionError
+from requests.exceptions import ConnectionError, Timeout
 import time
 import os
 import hashlib
@@ -85,7 +85,7 @@ class HLSSegmentDownloader(threading.Thread):
         # Start background retry worker
         self.retry_queue = Queue.Queue()
         retry_thread = threading.Thread(target=retry_save_segment_loop, 
-                                        args=(self.retry_queue, self.http_session))
+                                    args=(self.retry_queue, self.http_session))
         retry_thread.setDaemon(True)
         retry_thread.start()
 
@@ -149,7 +149,7 @@ class HLSSegmentDownloader(threading.Thread):
                 print('HTTP error fetching segment %s' % url)
                 self.stats['failed'] += 1
             return
-        except (ConnectionError, socket.timeout, requests.exceptions.Timeout) as ex:
+        except (ConnectionError, socket.timeout, Timeout) as ex:
             self.defer_segment(seq, url, path)
             return
 
