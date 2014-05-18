@@ -24,6 +24,7 @@ import hashlib
 import threading
 import Queue
 import socket
+import logging
 
 def retry_save_segment_loop(queue, http_session):
     """
@@ -65,7 +66,7 @@ class HLSSegmentDownloader(threading.Thread):
         self.queue = queue
         self.folder = folder
         self.http_session = http_session
-        self.name_prefix = 'video-'
+        self.name_prefix = 'video'
 
         # Create folder if it does not exist
         if not os.path.exists(self.folder):
@@ -229,7 +230,7 @@ def main():
         print('Usage: hlsdump <url> <path>')
         sys.exit(-1)
     url = sys.argv[1]
-    path = sys.argv[2]
+    path = '%s-%s' % (sys.argv[2], hashlib.md5(url).hexdigest())
 
     queue = Queue.Queue()
 
@@ -238,12 +239,11 @@ def main():
     session.headers.update({'User-Agent': 'Apple-iPhone5C2/1001.405'})
 
     worker = HLSSegmentDownloader(queue, folder=path, http_session=session)
-    worker.name_prefix = 'video-' + hashlib.md5(url).hexdigest()
     worker.start()
 
     # A cool trick to get a working video from these dumps
     #
-    #     ls video*.ts | sort -t '-' -k 3n  | xargs cat > joinedfile
+    #     ls video*.ts | sort -t '-' -k 2n  | xargs cat > joinedfile
     #     ffmpeg -i joinedfile -c copy -bsf:a aac_adtstoasc final.mp4
     #
 
