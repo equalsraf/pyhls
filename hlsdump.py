@@ -9,7 +9,25 @@ Basically works as follows
    queues segment urls for download
 2. A background thread worker (HLSSegmentDownloader) reads the queue, downloads
    the segments and saves then into individual files
-3: Another background thread handles some HTTP retries
+3. Another background thread handles some HTTP retries - see 
+   retry_save_segment_loop()
+
+Usage
+    hlsdump <url> <pathprefix>
+
+hlsdump will download every segment it can get from the
+playlist **url**. Each segment will be a separate file, named
+<nameprefix>-<overflowcount>#<segment>.ts
+
+Where
+
+* overflowcount is usually '0' but can be incremented
+  if the natural HLS sequence numbers overlap
+* segment is the HLS sequence number
+
+**pathprefix** is a partial path to the folder where the files
+will be saved (hlsdump will append an identifier to the final path
+name)
 
 """
 from __future__ import print_function
@@ -69,8 +87,10 @@ class HLSSegmentDownloader(threading.Thread):
         self.name_prefix = 'video'
 
         # Create folder if it does not exist
-        if not os.path.exists(self.folder):
-            os.mkdir(self.folder)
+        try:
+            os.makedirs(self.folder)
+        except:
+            pass
         
         if not os.path.isdir(self.folder):
             raise RuntimeError('%s is not a folder' % self.folder)
@@ -91,15 +111,20 @@ class HLSSegmentDownloader(threading.Thread):
 
     def run(self):
         while True:
-            seq, url, playlistinfo = self.queue.get()
+            seq, overflow, url, playlistinfo = self.queue.get()
             self.stats['total'] += 1
-            if self.lastseq != -1 and seq != self.lastseq+1:
+
+            # if the seqnum in non sequential, we missed
+            # segments, but there is no way to know how many if
+            # the seqnum overflows
+            if self.lastseq != -1 and seq != self.lastseq+1 and \
+                    seq > self.lastseq:
                 self.stats['missed'] += seq - self.lastseq
 
-            self.save_segment(url, seq, playlistinfo)
+            self.save_segment(url, seq, overflow, playlistinfo)
             self.lastseq = seq
             self.queue.task_done()
-            self.print_info(seq, playlistinfo)
+            self.print_info(seq, overflow, playlistinfo)
 
     @staticmethod
     def remove(path):
@@ -112,27 +137,28 @@ class HLSSegmentDownloader(threading.Thread):
         except OSError:
             pass
 
-    def save_segment(self, url, seq, playlistinfo, chunk_size=1024*32):
+    def save_segment(self, url, seq, overflow, plinfo, chunk_size=1024*32):
         """
         Dowload segment URL and save it into a file. The file will
         be named as
 
-            <prefix><segment sequence number>.ts
+            <prefix><overflow>#<segment sequence number>.ts
 
         * url of the segment
         * seq number of the segment 
-        * playlistinfo is a MediaInfo object for the playlist
+        * overflow count
+        * plinfo is a MediaInfo object for the playlist
         * chunk_size is the amount of content we hold in memory at a time
 
         You can set the **name_prefix** attribute to change the prefix
         """
 
         path = os.path.join(self.folder, 
-                            '%s-%d.ts' % (self.name_prefix, seq) )
+                            '%s-%d#%d.ts' % (self.name_prefix, overflow, seq) )
         try:
             # FIXME: this timeout might be too large/small
             req = self.http_session.get( url, stream=True, 
-                                        timeout=playlistinfo.target_duration)
+                                        timeout=plinfo.target_duration)
             req.raise_for_status()
 
             if os.path.exists(path):
@@ -163,11 +189,11 @@ class HLSSegmentDownloader(threading.Thread):
         print('Defering segment (%d) %s' % 
     		(seq, url))
 
-    def print_info(self, seq, info):
+    def print_info(self, overflow, seq, info):
         """
         Print worker status
         """
-        print('#%d ' % seq, end='')
+        print('%d#%d ' % (overflow, seq), end='')
         for name, value in self.stats.items():
             print("%s: %s " % (name.capitalize(), value), end='')
         print("TargetDuration: %s" % info.target_duration, end='')
@@ -186,7 +212,12 @@ def hls_playlist_loop(queue, playlist, http_session=requests.Session()):
     This function BLOCKS execution
     """
     queue = queue
+    # The expected next segment
     nextseq = -1
+    # The sequence of the last playlist
+    windowstart = -1
+    # Number of sequence overflows so far
+    overflowcount = 0
 
     failed = 0
     while True:
@@ -203,6 +234,12 @@ def hls_playlist_loop(queue, playlist, http_session=requests.Session()):
                 return
 
         failed = 0
+        if windowstart != -1 and windowstart > strm.sequence:
+            print("OVERFLOW")
+            overflowcount += 1
+            nextseq = -1
+        windowstart = strm.sequence
+
         if nextseq == -1 or strm.sequence >= nextseq:
             start = 0
         else:
@@ -211,6 +248,7 @@ def hls_playlist_loop(queue, playlist, http_session=requests.Session()):
         for i in range(start, len(strm.segment_urls)):
             queue.put( (
                     strm.sequence+i,
+                    overflowcount,
                     strm.segment_urls[i],
                     strm.info
                 ))
@@ -226,9 +264,9 @@ def hls_playlist_loop(queue, playlist, http_session=requests.Session()):
 
 
 def main():
-    """hlsdump <url> <path>"""
+    """hlsdump <url> <pathprefix>"""
     if len(sys.argv) != 3:
-        print('Usage: hlsdump <url> <path>')
+        print('Usage: ' + main.__doc__)
         sys.exit(-1)
     url = sys.argv[1]
     path = '%s-%s' % (sys.argv[2], hashlib.md5(url).hexdigest())
