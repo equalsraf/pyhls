@@ -44,6 +44,8 @@ import Queue
 import socket
 import logging
 
+# FIXME: what happens if bg threads raise=
+
 def retry_save_segment_loop(queue, http_session):
     """
     Background worker to retry failed segment downloads, this
@@ -269,7 +271,7 @@ def main():
         print('Usage: ' + main.__doc__)
         sys.exit(-1)
     url = sys.argv[1]
-    path = '%s-%s' % (sys.argv[2], hashlib.md5(url).hexdigest())
+    path = '%s%s' % (sys.argv[2], hashlib.md5(url).hexdigest())
 
     queue = Queue.Queue()
 
@@ -282,7 +284,7 @@ def main():
 
     # A cool trick to get a working video from these dumps
     #
-    #     ls video*.ts | sort -t '-' -k 2n  | xargs cat > joinedfile
+    #     ls video*.ts | sort -t '#' -r -k1.7n -k2,2n | xargs cat > joinedfile
     #     ffmpeg -i joinedfile -c copy -bsf:a aac_adtstoasc final.mp4
     #
 
