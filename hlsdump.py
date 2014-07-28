@@ -37,12 +37,13 @@ import sys
 import requests
 from requests.exceptions import ConnectionError, Timeout
 import time
-import os
+import os, re
 import hashlib
 import threading
-import Queue
+from queue import Queue
 import socket
 import logging
+import shutil, glob
 
 # FIXME: what happens if bg threads raise=
 
@@ -60,12 +61,18 @@ def retry_save_segment_loop(queue, http_session):
             if os.path.exists(path):
                 print('[Retry] File %s already exists, skipping' % (path))
                 continue
-            with file( path, 'wb') as out:
+            with open( path, 'wb') as out:
                 for chunk in req.iter_content():
                     out.write(chunk)
         except:
             continue
         print('[Retry] Successfully retrieved deferred segment as %s' % path)
+
+def atoi(text):
+    return int(text) if text.isdigit() else text
+
+def natkey(text):
+    return [atoi(c) for c in re.split('(\d+)', text)]
 
 class HLSSegmentDownloader(threading.Thread):
     """
@@ -105,7 +112,7 @@ class HLSSegmentDownloader(threading.Thread):
                 }
         
         # Start background retry worker
-        self.retry_queue = Queue.Queue()
+        self.retry_queue = Queue()
         retry_thread = threading.Thread(target=retry_save_segment_loop, 
                                     args=(self.retry_queue, self.http_session))
         retry_thread.setDaemon(True)
@@ -167,7 +174,7 @@ class HLSSegmentDownloader(threading.Thread):
                 print('File %s already exists, skipping' % (path))
                 return
 
-            with file( path, 'wb') as out:
+            with open( path, 'wb') as out:
                 for chunk in req.iter_content(chunk_size):
                     out.write(chunk)
         except requests.HTTPError as ex:
@@ -271,9 +278,9 @@ def main():
         print('Usage: ' + main.__doc__)
         sys.exit(-1)
     url = sys.argv[1]
-    path = '%s%s' % (sys.argv[2], hashlib.md5(url).hexdigest())
+    path = '%s%s' % (sys.argv[2], hashlib.md5(url.encode('utf8')).hexdigest())
 
-    queue = Queue.Queue()
+    queue = Queue()
 
     # HTTP session settings
     session = requests.Session()
@@ -282,12 +289,6 @@ def main():
     worker = HLSSegmentDownloader(queue, folder=path, http_session=session)
     worker.start()
 
-    # A cool trick to get a working video from these dumps
-    #
-    #     ls video*.ts | sort -t '#' -r -k1.7n -k2,2n | xargs cat > joinedfile
-    #     ffmpeg -i joinedfile -c copy -bsf:a aac_adtstoasc final.mp4
-    #
-
     try:
         print("Fetching HLS from %s" % url)
         hls_playlist_loop(queue, url, http_session=session)
@@ -295,6 +296,18 @@ def main():
     except KeyboardInterrupt:
         print("Interrupted")
         sys.exit(-1)
+
+    # You might want to fix the video using
+    #
+    #     ffmpeg -i joinedfile -c copy -bsf:a aac_adtstoasc final.mp4
+    #
+    print('Merging stream')
+    dst = open(os.path.join(path, 'video.dump'), 'wb')
+    chunks = glob.glob(os.path.join(path, '*.ts'))
+    for chunk in sorted(chunks, key=natkey):
+        shutil.copyfileobj(open(chunk, 'rb'), dst)
+    dst.close()
+
 
 if __name__ == '__main__':
     main()
