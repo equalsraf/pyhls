@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 HLS stream download helper
 
@@ -272,13 +273,8 @@ def hls_playlist_loop(queue, playlist, http_session=requests.Session()):
         time.sleep(strm.info.target_duration*0.5)
 
 
-def main():
+def main(url, path):
     """hlsdump <url> <pathprefix>"""
-    if len(sys.argv) != 3:
-        print('Usage: ' + main.__doc__)
-        sys.exit(-1)
-    url = sys.argv[1]
-    path = '%s%s' % (sys.argv[2], hashlib.md5(url.encode('utf8')).hexdigest())
 
     queue = Queue()
 
@@ -310,4 +306,10 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) != 3:
+        print('Usage: ' + main.__doc__)
+        sys.exit(-1)
+    url = sys.argv[1]
+    path = '%s%s' % (sys.argv[2], hashlib.md5(url.encode('utf8')).hexdigest())
+
+    main(url, path)
